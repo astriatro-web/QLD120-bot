@@ -10,7 +10,7 @@ CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 
 def send_telegram_msg(message):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown", "disable_web_page_preview": False}
+    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown", "disable_web_page_preview": True}
     requests.post(url, json=payload)
 
 def get_ma_series(data, ticker, window):
@@ -43,13 +43,17 @@ def run_strategy():
         qld_ma120, qld_ma300 = qld_ma120_s.iloc[-1], qld_ma300_s.iloc[-1]
         qld_days_120 = get_consecutive_days(qld_series, qld_ma120_s)
         
-        # QQQ & SSO 데이터
+        # SSO 데이터 및 이평선
+        sso_series = data["SSO"].dropna()
+        sso_now = sso_series.iloc[-1]
+        sso_ma60 = get_ma_series(data, "SSO", 60).iloc[-1]
+        sso_ma120 = get_ma_series(data, "SSO", 120).iloc[-1]
+        sso_ma300 = get_ma_series(data, "SSO", 300).iloc[-1]
+
+        # QQQ 데이터
         qqq_now = data["QQQ"].dropna().iloc[-1]
         qqq_ma120 = get_ma_series(data, "QQQ", 120).iloc[-1]
         qqq_ma20 = get_ma_series(data, "QQQ", 20).iloc[-1]
-        sso_now = data["SSO"].dropna().iloc[-1]
-        sso_ma60 = get_ma_series(data, "SSO", 60).iloc[-1]
-        sso_ma120 = get_ma_series(data, "SSO", 120).iloc[-1]
 
         # 텔레그램 메시지 구성
         msg = f"📊 *[QLD 전략 아침 리포트]*\n"
@@ -57,6 +61,7 @@ def run_strategy():
         msg += f"━━━━━━━━━━━━━━━\n"
         msg += f"💵 *환율:* {rate:,.2f}원 | 🌡️ *VIX:* {vix_now:.2f}\n"
         msg += f"🧠 *Fear & Greed:* [바로가기](https://www.cnn.com/markets/fear-and-greed)\n"
+        msg += f"📝 *분할 매수 금액 및 본문:* [바로가기](https://colab.research.google.com/drive/1x0o1OMcg7L5H67-kdKSHSVbtSuQanFjN?usp=sharing)\n"
         msg += f"━━━━━━━━━━━━━━━\n\n"
         
         msg += f"📍 *QLD 상세 지표 (현재: ${qld_now:.2f})*\n"
@@ -65,9 +70,13 @@ def run_strategy():
         msg += f"- 300일선: ${qld_ma300:.2f} ({'📉하방' if qld_now < qld_ma300 else '📈상방'})\n"
         
         if qld_now < qld_ma120:
-            msg += f"👉 *🔥 매수 구간 ({qld_days_120}일차)*\n\n"
+            msg += f"👉 *🔥 QLD 매수 구간 ({qld_days_120}일차)*\n\n"
         else:
-            msg += f"👉 *💎 관망 및 원칙 보유 유지*\n\n"
+            msg += f"👉 *💎 QLD 관망 유지*\n\n"
+
+        msg += f"📍 *SSO 매수 근거 보조지표 (현재: ${sso_now:.2f})*\n"
+        msg += f"- 120일선: ${sso_ma120:.2f} ({'📉하방' if sso_now < sso_ma120 else '📈상방'})\n"
+        msg += f"- 300일선: ${sso_ma300:.2f} ({'📉하방' if sso_now < sso_ma300 else '📈상방'})\n\n"
 
         msg += f"🛡️ *보조지표 요약*\n"
         msg += f"- QQQ 120선: {'📉 하방(주의)' if qqq_now < qqq_ma120 else '📈 상방(안정)'}\n"
