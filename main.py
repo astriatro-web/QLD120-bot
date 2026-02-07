@@ -4,13 +4,13 @@ from datetime import datetime
 import os
 import requests
 
-# 텔레그램 설정 (깃허브 Secrets에서 가져옴)
+# 텔레그램 설정
 TOKEN = os.environ['TELEGRAM_TOKEN']
 CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 
 def send_telegram_msg(message):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown", "disable_web_page_preview": False}
     requests.post(url, json=payload)
 
 def get_ma_series(data, ticker, window):
@@ -34,7 +34,7 @@ def run_strategy():
         rate = data["USDKRW=X"].dropna().iloc[-1]
         vix_now = data["^VIX"].dropna().iloc[-1]
         
-        # QLD 데이터
+        # QLD 데이터 및 이평선
         qld_series = data["QLD"].dropna()
         qld_now = qld_series.iloc[-1]
         qld_ma60 = get_ma_series(data, "QLD", 60).iloc[-1]
@@ -55,20 +55,23 @@ def run_strategy():
         msg = f"📊 *[QLD 전략 아침 리포트]*\n"
         msg += f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
         msg += f"━━━━━━━━━━━━━━━\n"
-        msg += f"💵 *환율:* 1$ = {rate:,.2f}원\n"
-        msg += f"🌡️ *VIX:* {vix_now:.2f}\n"
+        msg += f"💵 *환율:* {rate:,.2f}원 | 🌡️ *VIX:* {vix_now:.2f}\n"
+        msg += f"🧠 *Fear & Greed:* [바로가기](https://www.cnn.com/markets/fear-and-greed)\n"
         msg += f"━━━━━━━━━━━━━━━\n\n"
         
-        msg += f"📍 *QLD 상태 (현재: ${qld_now:.2f})*\n"
+        msg += f"📍 *QLD 상세 지표 (현재: ${qld_now:.2f})*\n"
+        msg += f"- 60일선: ${qld_ma60:.2f} ({'📉하방' if qld_now < qld_ma60 else '📈상방'})\n"
         msg += f"- 120일선: ${qld_ma120:.2f} ({'📉하방' if qld_now < qld_ma120 else '📈상방'})\n"
+        msg += f"- 300일선: ${qld_ma300:.2f} ({'📉하방' if qld_now < qld_ma300 else '📈상방'})\n"
+        
         if qld_now < qld_ma120:
             msg += f"👉 *🔥 매수 구간 ({qld_days_120}일차)*\n\n"
         else:
-            msg += f"👉 *💎 관망 및 원칙 보유*\n\n"
+            msg += f"👉 *💎 관망 및 원칙 보유 유지*\n\n"
 
-        msg += f"🛡️ *보조지표 및 옵션*\n"
-        msg += f"- QQQ 120선: {'📉하방' if qqq_now < qqq_ma120 else '📈상방'}\n"
-        msg += f"- 고배팅: {'✅가능' if qqq_now > qqq_ma120 and qqq_now < qqq_ma20 else '⚠️금지'}\n"
+        msg += f"🛡️ *보조지표 요약*\n"
+        msg += f"- QQQ 120선: {'📉 하방(주의)' if qqq_now < qqq_ma120 else '📈 상방(안정)'}\n"
+        msg += f"- 고배팅 가능: {'✅ 가능' if qqq_now > qqq_ma120 and qqq_now < qqq_ma20 else '⚠️ 금지'}\n"
         
         sso_status = "🚨익절권장" if sso_now < sso_ma60 else ("🔄재매수가능" if sso_now > sso_ma120 else "💤관망")
         msg += f"- 텐버거(SSO): {sso_status}\n"
@@ -80,7 +83,6 @@ def run_strategy():
     except Exception as e:
         error_msg = f"❌ 에러 발생: {str(e)}"
         send_telegram_msg(error_msg)
-        print(error_msg)
 
 if __name__ == "__main__":
     run_strategy()
