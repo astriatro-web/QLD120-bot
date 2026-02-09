@@ -4,30 +4,36 @@ from datetime import datetime
 import os
 import requests
 
-# 1. 환경 변수 로드 (Secrets 설정 확인 필수)
+# 1. 환경 변수 로드
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
 def get_fear_and_greed():
-    """CNN Fear & Greed Index 실시간 수치 크롤링"""
+    """CNN Fear & Greed Index 수집 (브라우저 모사로 차단 우회)"""
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
         url = "https://production.dataviz.cnn.io/index/feargreed/static"
-        res = requests.get(url, headers=headers, timeout=10)
-        data = res.json()
-        score = int(data['now']['value'])
-        rating = data['now']['rating'].upper()
-        
-        status_kor = {
-            "EXTREME FEAR": "😨 매우 공포", "FEAR": "😰 공포",
-            "NEUTRAL": "😐 중립", "GREED": "😏 탐욕", "EXTREME GREED": "🤑 매우 탐욕"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Origin': 'https://www.cnn.com',
+            'Referer': 'https://www.cnn.com/'
         }
-        return score, status_kor.get(rating, rating)
+        res = requests.get(url, headers=headers, timeout=15)
+        if res.status_code == 200:
+            data = res.json()
+            score = int(data['now']['value'])
+            rating = data['now']['rating'].upper()
+            
+            status_kor = {
+                "EXTREME FEAR": "😨 매우 공포", "FEAR": "😰 공포",
+                "NEUTRAL": "😐 중립", "GREED": "😏 탐욕", "EXTREME GREED": "🤑 매우 탐욕"
+            }
+            return score, status_kor.get(rating, rating)
+        return None, "접속 지연"
     except:
         return None, "확인 불가"
 
 def get_rsi(series, period=14):
-    """RSI(상대강도지수) 계산 공식"""
+    """RSI 계산"""
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
@@ -35,10 +41,9 @@ def get_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def get_consecutive_days(price_series, ma_series):
-    """이평선 아래에 머문 연속 일수 계산"""
+    """원본 유지: 연속 하락 일수 계산"""
     under_ma = price_series < ma_series
     count = 0
-    # 최신 데이터부터 역순으로 확인하여 연속성 판단
     for val in under_ma[::-1]:
         if val: count += 1
         else: break
@@ -46,22 +51,19 @@ def get_consecutive_days(price_series, ma_series):
 
 def run_strategy():
     try:
-        # 2. 데이터 다운로드 (3년치 데이터 확보)
+        # 2. 데이터 다운로드
         tickers = ["USDKRW=X", "QLD", "SSO", "QQQ", "^VIX", "TQQQ"]
         raw_data = yf.download(tickers, period="3y", interval="1d", progress=False, auto_adjust=True)
         
-        # MultiIndex(Price, Ticker) 구조 대응
-        if isinstance(raw_data.columns, pd.MultiIndex):
-            data = raw_data['Close']
-        else:
-            data = raw_data
+        # 데이터 구조 정리
+        data = raw_data['Close'] if isinstance(raw_data.columns, pd.MultiIndex) else raw_data
             
-        # 3. 주요 공통 지표 추출
+        # 3. 공통 지표
         rate = data["USDKRW=X"].dropna().iloc[-1]
         vix_now = data["^VIX"].dropna().iloc[-1]
         fng_score, fng_status = get_fear_and_greed()
         
-        # 4. QQQ 분석 (전략의 기준점)
+        # 4. QQQ 분석 (고배팅/TQQQ 기준)
         qqq_series = data["QQQ"].dropna()
         qqq_now = qqq_series.iloc[-1]
         qqq_ma20 = qqq_series.rolling(20).mean().iloc[-1]
@@ -69,7 +71,7 @@ def run_strategy():
         qqq_ma200 = qqq_series.rolling(200).mean().iloc[-1]
         qqq_rsi = get_rsi(qqq_series).iloc[-1]
         
-        # 5. QLD 분석 (메인 운용)
+        # 5. QLD 분석 (원본 로직 유지)
         qld_series = data["QLD"].dropna()
         qld_now = qld_series.iloc[-1]
         qld_ma60 = qld_series.rolling(60).mean().iloc[-1]
@@ -78,18 +80,16 @@ def run_strategy():
         qld_ma300 = qld_series.rolling(300).mean().iloc[-1]
         qld_days_120 = get_consecutive_days(qld_series, qld_ma120_s)
         
-        # 6. SSO 분석 (서브 운용)
+        # 6. SSO 분석 (원본 로직 유지)
         sso_series = data["SSO"].dropna()
         sso_now = sso_series.iloc[-1]
         sso_ma60 = sso_series.rolling(60).mean().iloc[-1]
         sso_ma120 = sso_series.rolling(120).mean().iloc[-1]
         sso_ma300 = sso_series.rolling(300).mean().iloc[-1]
 
-        # 7. 전략 판독 로직
-        # TQQQ 특공대: 역대급 바닥 신호 (RSI 35↓, VIX 28↑, F&G 30↓)
-        tqqq_signal = qqq_rsi < 35 and vix_now > 28 and (fng_score is not None and fng_score < 30)
-
-        # 고배팅 가능 판독
+        # 7. 전략 신호 판독
+        tqqq_signal = qqq_rsi < 35 and vix_now > 28 and (fng_score is not None and fng_score < 35)
+        
         high_bet_status = "⚠️ 금지"
         if qqq_now > qqq_ma120:
             if qqq_now < qqq_ma20 and qqq_rsi < 50:
@@ -99,7 +99,7 @@ def run_strategy():
             else:
                 high_bet_status = "💎 관망 (추격 금지)"
 
-        # 8. 텔레그램 리포트 구성
+        # 8. 리포트 작성
         msg = f"📊 *[QLD 전략 아침 리포트]*\n"
         msg += f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
         msg += f"━━━━━━━━━━━━━━━\n"
@@ -134,15 +134,14 @@ def run_strategy():
         msg += f"- 텐버거(SSO): {sso_status}\n"
         msg += f"━━━━━━━━━━━━━━━"
 
-        # 9. 텔레그램 메시지 전송
+        # 9. 전송
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown", "disable_web_page_preview": True}
         requests.post(url, json=payload)
 
     except Exception as e:
-        error_msg = f"❌ 시스템 에러: {str(e)}"
         requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
-                      json={"chat_id": CHAT_ID, "text": error_msg})
+                      json={"chat_id": CHAT_ID, "text": f"❌ 시스템 에러: {str(e)}"})
 
 if __name__ == "__main__":
     run_strategy()
