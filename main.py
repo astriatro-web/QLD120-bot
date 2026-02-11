@@ -81,7 +81,7 @@ def run_strategy():
         msg += f"💵 *환율:* {rate:,.2f}원 | 🌡️ *VIX:* {vix_now:.2f}\n"
         msg += f"🧠 *Fear & Greed:* [CNN 바로가기](https://www.cnn.com/markets/fear-and-greed)\n"
         msg += f"📉 *QQQ RSI:* {qqq_rsi:.2f}\n"
-        msg += f"📝 *분할 매수 금액:* [코랩 이동](https://colab.research.google.com/drive/1x0o1OMcg7L5H67-kdKSHSVbtSuQanFjN?usp=sharing)\n"
+        msg += f"📝 *분할 매수 금액:* [코랩 이동](https://colab.research.google.com/drive/1gqPmUIYoWnPWomINM7nQX8SvIiq9L5m1?usp=sharing)\n"
         msg += f"━━━━━━━━━━━━━━━\n\n"
         
         msg += f"📍 *QLD 상세 (현재: ${qld_now:.2f})*\n"
