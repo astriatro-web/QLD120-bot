@@ -3,18 +3,45 @@ import pandas as pd
 from datetime import datetime
 import os
 import requests
+import numpy as np
 
 # 1. 환경 변수 로드
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
-def get_rsi(series, period=14):
-    """RSI 계산"""
-    delta = series.diff()
+def get_indicators(df, period=14):
+    """RSI 및 ADX 계산"""
+    close = df['Close']
+    high = df['High']
+    low = df['Low']
+    
+    # RSI 계산
+    delta = close.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
     rs = gain / loss
-    return 100 - (100 / (1 + rs))
+    rsi = 100 - (100 / (1 + rs))
+    
+    # ADX 계산을 위한 TR, DM 계산
+    tr1 = high - low
+    tr2 = abs(high - close.shift(1))
+    tr3 = abs(low - close.shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(window=period).mean()
+    
+    up_move = high - high.shift(1)
+    down_move = low.shift(1) - low
+    
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
+    
+    plus_di = 100 * (pd.Series(plus_dm, index=df.index).rolling(window=period).mean() / atr)
+    minus_di = 100 * (pd.Series(minus_dm, index=df.index).rolling(window=period).mean() / atr)
+    
+    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+    adx = dx.rolling(window=period).mean()
+    
+    return rsi, adx
 
 def get_consecutive_days(price_series, ma_series):
     """연속 하락 일수 계산"""
@@ -27,94 +54,91 @@ def get_consecutive_days(price_series, ma_series):
 
 def run_strategy():
     try:
-        # 2. 데이터 다운로드
+        # 2. 데이터 다운로드 (ADX 계산을 위해 High, Low 포함)
         tickers = ["USDKRW=X", "QLD", "SSO", "QQQ", "^VIX", "TQQQ"]
         raw_data = yf.download(tickers, period="3y", interval="1d", progress=False, auto_adjust=True)
         
-        data = raw_data['Close'] if isinstance(raw_data.columns, pd.MultiIndex) else raw_data
-            
         # 3. 주요 지표 추출
-        rate = data["USDKRW=X"].dropna().iloc[-1]
-        vix_now = data["^VIX"].dropna().iloc[-1]
+        close_data = raw_data['Close']
+        rate = close_data["USDKRW=X"].dropna().iloc[-1]
+        vix_now = close_data["^VIX"].dropna().iloc[-1]
         
-        # 4. QQQ 분석
-        qqq_series = data["QQQ"].dropna()
-        qqq_now = qqq_series.iloc[-1]
-        qqq_ma20 = qqq_series.rolling(20).mean().iloc[-1]
-        qqq_ma120 = qqq_series.rolling(120).mean().iloc[-1]
-        qqq_ma200 = qqq_series.rolling(200).mean().iloc[-1]
-        qqq_rsi = get_rsi(qqq_series).iloc[-1]
+        # 4. QQQ 분석 (ADX 필터 적용)
+        qqq_df = raw_data.xs('QQQ', axis=1, level=1).dropna()
+        qqq_rsi_series, qqq_adx_series = get_indicators(qqq_df)
         
-        # 5. QLD 분석 (200일선 추가)
-        qld_series = data["QLD"].dropna()
-        qld_now = qld_series.iloc[-1]
-        qld_ma60 = qld_series.rolling(60).mean().iloc[-1]
-        qld_ma120_s = qld_series.rolling(120).mean()
-        qld_ma120 = qld_ma120_s.iloc[-1]
-        qld_ma200 = qld_series.rolling(200).mean().iloc[-1] # 추가
-        qld_ma300 = qld_series.rolling(300).mean().iloc[-1]
-        qld_days_120 = get_consecutive_days(qld_series, qld_ma120_s)
-        
-        # 6. SSO 분석 (200일선 추가)
-        sso_series = data["SSO"].dropna()
-        sso_now = sso_series.iloc[-1]
-        sso_ma60 = sso_series.rolling(60).mean().iloc[-1]
-        sso_ma120 = sso_series.rolling(120).mean().iloc[-1]
-        sso_ma200 = sso_series.rolling(200).mean().iloc[-1] # 추가
-        sso_ma300 = sso_series.rolling(300).mean().iloc[-1]
+        qqq_now = qqq_df['Close'].iloc[-1]
+        qqq_rsi = qqq_rsi_series.iloc[-1]
+        qqq_adx = qqq_adx_series.iloc[-1]
+        qqq_ma20 = qqq_df['Close'].rolling(20).mean().iloc[-1]
+        qqq_ma120 = qqq_df['Close'].rolling(120).mean().iloc[-1]
+        qqq_ma200 = qqq_df['Close'].rolling(200).mean().iloc[-1]
 
-        # 7. 전략 신호 판독
-        tqqq_signal = qqq_rsi < 35 and vix_now > 28
-        
+        # 5. 시장 상태 진단
+        if qqq_adx < 20:
+            market_status = "💤 횡보 (추세 없음)"
+            is_sideways = True
+        elif qqq_now > qqq_ma120:
+            market_status = "📈 상승 추세"
+            is_sideways = False
+        else:
+            market_status = "📉 하락 추세"
+            is_sideways = False
+
+        # 6. 고배팅 필터 로직
         high_bet_status = "⚠️ 금지"
-        if qqq_now > qqq_ma120:
-            if qqq_now < qqq_ma20 and qqq_rsi < 50:
-                high_bet_status = "✅ 적극 가능 (눌림목)"
-            elif qqq_now < qqq_ma20:
-                high_bet_status = "🟡 보통 (분할 매수)"
+        if not is_sideways: # 추세장일 때
+            if qqq_now > qqq_ma120:
+                if qqq_now < qqq_ma20 and qqq_rsi < 50:
+                    high_bet_status = "✅ 적극 가능 (눌림목)"
+                elif qqq_now < qqq_ma20:
+                    high_bet_status = "🟡 보통 (분할 매수)"
+                else:
+                    high_bet_status = "💎 관망 (추격 금지)"
+        else: # 횡보장일 때 (필터 강화)
+            if qqq_rsi < 40: # 횡보장에서는 RSI 40 미만에서만 적극 권장
+                high_bet_status = "✅ 적극 가능 (박스권 하단)"
             else:
-                high_bet_status = "💎 관망 (추격 금지)"
+                high_bet_status = "🟡 보통 (박스권 내 대기)"
+
+        # 7. QLD/SSO 상세 (이평선 추가 버전 유지)
+        qld_series = close_data["QLD"].dropna()
+        qld_now, qld_ma60 = qld_series.iloc[-1], qld_series.rolling(60).mean().iloc[-1]
+        qld_ma120_s = qld_series.rolling(120).mean()
+        qld_ma120, qld_ma200, qld_ma300 = qld_ma120_s.iloc[-1], qld_series.rolling(200).mean().iloc[-1], qld_series.rolling(300).mean().iloc[-1]
+        qld_days_120 = get_consecutive_days(qld_series, qld_ma120_s)
+
+        sso_series = close_data["SSO"].dropna()
+        sso_now, sso_ma60 = sso_series.iloc[-1], sso_series.rolling(60).mean().iloc[-1]
+        sso_ma120, sso_ma200, sso_ma300 = sso_series.rolling(120).mean().iloc[-1], sso_series.rolling(200).mean().iloc[-1], sso_series.rolling(300).mean().iloc[-1]
 
         # 8. 리포트 구성
-        msg = f"📊 *[QLD 전략 아침 리포트]*\n"
+        msg = f"📊 *[QLD 지능형 전략 리포트]*\n"
         msg += f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
         msg += f"━━━━━━━━━━━━━━━\n"
+        msg += f"🌡️ *시장 진단:* {market_status}\n"
+        msg += f"📉 *ADX 강도:* {qqq_adx:.1f} | *RSI:* {qqq_rsi:.1f}\n"
         msg += f"💵 *환율:* {rate:,.2f}원 | 🌡️ *VIX:* {vix_now:.2f}\n"
-        msg += f"🧠 *Fear & Greed:* [CNN 바로가기](https://www.cnn.com/markets/fear-and-greed)\n"
-        msg += f"📉 *QQQ RSI:* {qqq_rsi:.2f}\n"
-        msg += f"📝 *분할 매수 금액:* [코랩 이동](https://colab.research.google.com/drive/1gqPmUIYoWnPWomINM7nQX8SvIiq9L5m1?usp=sharing)\n"
         msg += f"━━━━━━━━━━━━━━━\n\n"
         
-        # QLD 상세 (순서: 60-120-200-300)
-        msg += f"📍 *QLD 상세 (현재: ${qld_now:.2f})*\n"
-        msg += f"- 60일선: ${qld_ma60:.2f} ({'📉하방' if qld_now < qld_ma60 else '📈상방'})\n"
-        msg += f"- 120일선: ${qld_ma120:.2f} ({'📉하방' if qld_now < qld_ma120 else '📈상방'})\n"
-        msg += f"- 200일선: ${qld_ma200:.2f} ({'📉하방' if qld_now < qld_ma200 else '📈상방'})\n"
-        msg += f"- 300일선: ${qld_ma300:.2f} ({'📉하방' if qld_now < qld_ma300 else '📈상방'})\n"
-        
-        if qld_now < qld_ma120:
-            msg += f"👉 *🔥 QLD 매수 구간 ({qld_days_120}일차)*\n\n"
-        else:
-            msg += f"👉 *💎 QLD 관망 유지*\n\n"
+        msg += f"📍 *QLD 상세 (${qld_now:.2f})*\n"
+        msg += f"- 60일선: ${qld_ma60:.2f} ({'📉' if qld_now < qld_ma60 else '📈'})\n"
+        msg += f"- 120일선: ${qld_ma120:.2f} ({'📉' if qld_now < qld_ma120 else '📈'})\n"
+        msg += f"- 200일선: ${qld_ma200:.2f} ({'📉' if qld_now < qld_ma200 else '📈'})\n"
+        msg += f"- 300일선: ${qld_ma300:.2f} ({'📉' if qld_now < qld_ma300 else '📈'})\n"
+        msg += f"👉 {'🔥 매수구간' if qld_now < qld_ma120 else '💎 관망'} ({qld_days_120}일차)\n\n"
 
-        # SSO 상세 (순서: 120-200-300)
-        msg += f"📍 *SSO 매수 보조 (현재: ${sso_now:.2f})*\n"
-        msg += f"- 120일선: ${sso_ma120:.2f} ({'📉하방' if sso_now < sso_ma120 else '📈상방'})\n"
-        msg += f"- 200일선: ${sso_ma200:.2f} ({'📉하방' if sso_now < sso_ma200 else '📈상방'})\n"
-        msg += f"- 300일선: ${sso_ma300:.2f} ({'📉하방' if sso_now < sso_ma300 else '📈상방'})\n\n"
+        msg += f"📍 *SSO 보조 (${sso_now:.2f})*\n"
+        msg += f"- 120일선: ${sso_ma120:.2f} | 200일: ${sso_ma200:.2f}\n\n"
 
-        msg += f"🚀 *TQQQ 특공대 신호*\n"
-        msg += f"👉 {'🔥 [강력 신호] TQQQ 진입 가능!' if tqqq_signal else '💤 신호 없음'}\n\n"
-
-        msg += f"🛡️ *보조지표 요약*\n"
-        msg += f"- QQQ 200선: {'📉 하방(위험)' if qqq_now < qqq_ma200 else '📈 상방(안정)'}\n"
-        msg += f"- 고배팅 가능: {high_bet_status}\n"
+        tqqq_signal = qqq_rsi < 35 and vix_now > 28
+        msg += f"🚀 *TQQQ 신호:* {'🔥 진입!' if tqqq_signal else '💤 없음'}\n"
+        msg += f"🛡️ *고배팅 가능:* {high_bet_status}\n"
         
         sso_status = "🚨익절권장" if sso_now < sso_ma60 else ("🔄재매수가능" if sso_now > sso_ma120 else "💤관망")
         msg += f"- 텐버거(SSO): {sso_status}\n"
         msg += f"━━━━━━━━━━━━━━━"
 
-        # 9. 최종 전송
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown", "disable_web_page_preview": True}
         requests.post(url, json=payload)
